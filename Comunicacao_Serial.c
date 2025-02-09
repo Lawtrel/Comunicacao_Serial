@@ -7,10 +7,13 @@
 #include "hardware/pio.h"
 #include "hardware/gpio.h"
 #include "hardware/i2c.h"
+#include "hardware/uart.h"
+#include "hardware/irq.h"
+#include "hardware/clocks.h"
 #include "ssd1306.h"
 #include "ws2812.pio.h"
 
-#define MATRIX_PIN 7
+#define WS2812_PIN 7
 #define NUM_LED 25
 #define RED_PIN 13
 #define GREEN_PIN 11
@@ -22,7 +25,10 @@ const uint I2C_SDA = 14;
 const uint I2C_SCL = 15;
 PIO pio = pio0;
 uint sm = 0;
+int current_message = 0;
+
 void ws2812_program_init(PIO pio, uint sm, uint offset, uint pin, float freq);
+void set_matrix(char digito);
 void init_display();
 void update_display(const char *message);
 void check_buttons();
@@ -34,20 +40,60 @@ struct render_area frame_area = {
         end_page : ssd1306_n_pages - 1
 };
 
-int current_message = 0;
+const uint32_t patterns[10] = {
+        0b011101000110011011100,  // 0
+        0b001001011000001011100,  // 1
+        0b011101000011100011110,  // 2
+        0b011101000011100100011,  // 3
+        0b000110011111000010000,  // 4
+        0b011111000011110100011,  // 5
+        0b011111000111110100011,  // 6
+        0b011100000110001000010,  // 7
+        0b011111000111110111111,  // 8
+        0b011111000111110100011   // 9
+    };
+
+
+void button_callback(uint gpio, uint32_t events) {
+        static uint32_t last_time = 0;
+        uint32_t now = to_ms_since_boot(get_absolute_time());
+
+        if (now - last_time <200) return; //debounce
+        last_time = now;
+        if (gpio == BUTTON_PIN) {
+                static bool green_led_state = false;
+                green_led_state = !green_led_state;
+                gpio_put(GREEN_PIN, green_led_state);
+                update_display(green_led_state ? "Led Verde ON" : "Led Verde OFF");
+        }
+        if (gpio == BUTTON_PIN2) {
+                static bool blue_led_state = false;
+                blue_led_state = !blue_led_state;
+                gpio_put(BLUE_PIN, blue_led_state);
+                update_display(blue_led_state ? "Led Azul ON" : "Led Azul OFF");
+        }
+}
 
 int main() {
         stdio_init_all();
-        uint offset = pio_add_program(pio, &ws2812_program);
-        ws2812_program_init(pio, sm, offset, MATRIX_PIN, 800000);
+        uart_init(uart0, 115200); // configurar porta serial
+        gpio_set_function(0, GPIO_FUNC_UART);
+        gpio_set_function(1, GPIO_FUNC_UART);
+         // Configuração de interrupção nos botões
+        gpio_set_irq_enabled_with_callback(BUTTON_PIN, GPIO_IRQ_EDGE_FALL, true, &button_callback);
+        gpio_set_irq_enabled_with_callback(BUTTON_PIN2, GPIO_IRQ_EDGE_FALL, true, &button_callback);
 
+        //inicializar matrix de leds
+        uint offset = pio_add_program(pio, &ws2812_program);
+        ws2812_program_init(pio, sm, offset, WS2812_PIN, 800000);
+        //inicializar leds RGB
         gpio_init(RED_PIN);
         gpio_set_dir(RED_PIN, GPIO_OUT);
         gpio_init(GREEN_PIN);
         gpio_set_dir(GREEN_PIN, GPIO_OUT);
         gpio_init(BLUE_PIN);
         gpio_set_dir(BLUE_PIN, GPIO_OUT);
-        
+        //inicializar botoes
         gpio_init(BUTTON_PIN);
         gpio_set_dir(BUTTON_PIN, GPIO_IN);
         gpio_pull_up(BUTTON_PIN);
@@ -56,12 +102,23 @@ int main() {
         gpio_pull_up(BUTTON_PIN2);
 
         init_display();
-
-        while (true)
-        {
-                check_buttons();
-                sleep_ms(100);
-        }
+        while (true) {
+                if (uart_is_readable(uart0)) {
+                    char cc;
+                    scanf("%c", &cc);
+                    printf("Recebi: %c\n", cc);
+                    
+                    char buffer[20];
+                    sprintf(buffer, "Caracter: %c", cc);
+                    update_display(buffer);
+            
+                    if (cc >= '0' && cc <= '9') {
+                        set_matrix(cc);  // Atualiza a matriz WS2812 com base no número recebido
+                    }
+                }
+                check_buttons();  // Atualiza os LEDs dos botões
+                
+            }            
         return 0;
         
 }
@@ -130,5 +187,29 @@ void check_buttons() {
 void ws2812_program_init(PIO pio, uint sm, uint offset, uint pin, float freq) {
         pio_gpio_init(pio, pin);
         pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
-
-}
+    
+        // Configuração do programa
+        pio_sm_config c = ws2812_program_get_default_config(offset);
+        sm_config_set_sideset_pins(&c, pin); // Usa o pino sideset
+        sm_config_set_out_shift(&c, true, true, 24); // 24 bits (3 bytes) por LED
+        sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX); // Usa apenas o FIFO TX
+    
+        // Ajuste a frequência do clock
+        float div = (float)clock_get_hz(clk_sys) / freq;
+        sm_config_set_clkdiv(&c, div);
+    
+        // Inicializa a state machine
+        pio_sm_init(pio, sm, offset, &c);
+        pio_sm_set_enabled(pio, sm, true);
+    }    
+    void set_matrix(char digito) {
+        int index = digito - '0';
+        // Enviar os dados para a WS2812
+        for (int i = 0; i < NUM_LED; i++) {
+                uint32_t color = (patterns[index] & (1 << i)) ? 0x00FF00 : 0x000000; // Verde ou apagado
+                pio_sm_put_blocking(pio, sm, color << 8);
+        }
+    
+        // Depuração: Exibir no Serial Monitor para ver se o índice está correto
+        printf("Número recebido: %c, Índice convertido: %d\n", digito, index);
+    }

@@ -41,14 +41,19 @@ pico_generate_pio_header(Comunicacao_Serial ${CMAKE_CURRENT_LIST_DIR}/ws2812.pio
 
 
 # Configura a comunicação serial (habilita UART e desabilita USB)
-pico_enable_stdio_uart(Comunicacao_Serial 1)
-pico_enable_stdio_usb(Comunicacao_Serial 0)
+pico_enable_stdio_uart(Comunicacao_Serial 0)
+pico_enable_stdio_usb(Comunicacao_Serial 1)
 
 # Inclui bibliotecas padrão
 target_link_libraries(Comunicacao_Serial 
-    pico_stdlib 
+    pico_stdlib
+    hardware_gpio
     hardware_pio
     hardware_i2c
+    hardware_uart
+    hardware_irq
+    hardware_clocks
+    hardware_timer
 )
 
 # Adiciona diretórios de inclusão
