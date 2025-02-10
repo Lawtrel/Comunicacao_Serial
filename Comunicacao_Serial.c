@@ -26,33 +26,27 @@ const uint I2C_SCL = 15;
 PIO pio = pio0;
 uint sm = 0;
 int current_message = 0;
-
-void ws2812_program_init(PIO pio, uint sm, uint offset, uint pin, float freq);
-void set_matrix(char digito);
-void init_display();
-void update_display(const char *message);
-void check_buttons();
 uint8_t ssd[ssd1306_buffer_length];
+
+typedef struct {
+        uint8_t G, R, B;
+    } led_matrix;
+led_matrix matrix[NUM_LED];
+
 struct render_area frame_area = {
         start_column : 0,
         end_column : ssd1306_width - 1,
         start_page : 0,
         end_page : ssd1306_n_pages - 1
 };
-
-const uint32_t patterns[10] = {
-        0b011101000110011011100,  // 0
-        0b001001011000001011100,  // 1
-        0b011101000011100011110,  // 2
-        0b011101000011100100011,  // 3
-        0b000110011111000010000,  // 4
-        0b011111000011110100011,  // 5
-        0b011111000111110100011,  // 6
-        0b011100000110001000010,  // 7
-        0b011111000111110111111,  // 8
-        0b011111000111110100011   // 9
-    };
-
+void init_matrix(uint pin);
+void setLedMatrix(uint index, uint8_t R, uint8_t G, uint8_t B);
+void clearMatrix();
+void renderMatrix();
+void set_matrix(char digito);
+void init_display();
+void update_display(const char *message);
+void check_buttons();
 
 void button_callback(uint gpio, uint32_t events) {
         static uint32_t last_time = 0;
@@ -84,8 +78,10 @@ int main() {
         gpio_set_irq_enabled_with_callback(BUTTON_PIN2, GPIO_IRQ_EDGE_FALL, true, &button_callback);
 
         //inicializar matrix de leds
-        uint offset = pio_add_program(pio, &ws2812_program);
-        ws2812_program_init(pio, sm, offset, WS2812_PIN, 800000);
+        init_matrix(WS2812_PIN);
+        clearMatrix();
+        renderMatrix();
+
         //inicializar leds RGB
         gpio_init(RED_PIN);
         gpio_set_dir(RED_PIN, GPIO_OUT);
@@ -112,7 +108,7 @@ int main() {
                     sprintf(buffer, "Caracter: %c", cc);
                     update_display(buffer);
             
-                    if (cc >= '0' && cc <= '9') {
+                    if (cc >= '0' && cc <= '9' || cc == 'c') {
                         set_matrix(cc);  // Atualiza a matriz WS2812 com base no número recebido
                     }
                 }
@@ -122,6 +118,39 @@ int main() {
         return 0;
         
 }
+//inicializar led matrix
+void init_matrix(uint pin) {
+        uint offset  = pio_add_program(pio0, &ws2812_program);
+        sm = pio_claim_unused_sm(pio0, true);
+        if (sm < 0) {
+                sm = pio_claim_unused_sm(pio1, true);
+        }
+        ws2812_program_init(pio0, sm, offset, pin, 800000.f);
+        clearMatrix();
+    }
+// seta as cores do led da matrix 
+void setLedMatrix(uint index, uint8_t R, uint8_t G, uint8_t B) {
+        if (index < NUM_LED) {
+                matrix[index].R = R;
+                matrix[index].G = G;
+                matrix[index].B = B;
+        }
+
+    }
+//limpar todos led da matrix
+void clearMatrix() {
+        for (int i = 0; i < NUM_LED; i++) {
+            setLedMatrix(i, 0, 0, 0);
+        }
+    }
+//enviar dados para a matrix
+void renderMatrix() {
+        for (int i = 0; i < NUM_LED; i++) {
+                pio_sm_put_blocking(pio, sm, matrix[i].G);
+                pio_sm_put_blocking(pio, sm, matrix[i].R);
+                pio_sm_put_blocking(pio, sm, matrix[i].B);
+        }
+    }
 
 void init_display() {
         i2c_init(i2c1, ssd1306_i2c_clock * 1000);
@@ -184,32 +213,30 @@ void check_buttons() {
         }
 }
 
-void ws2812_program_init(PIO pio, uint sm, uint offset, uint pin, float freq) {
-        pio_gpio_init(pio, pin);
-        pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
-    
-        // Configuração do programa
-        pio_sm_config c = ws2812_program_get_default_config(offset);
-        sm_config_set_sideset_pins(&c, pin); // Usa o pino sideset
-        sm_config_set_out_shift(&c, true, true, 24); // 24 bits (3 bytes) por LED
-        sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX); // Usa apenas o FIFO TX
-    
-        // Ajuste a frequência do clock
-        float div = (float)clock_get_hz(clk_sys) / freq;
-        sm_config_set_clkdiv(&c, div);
-    
-        // Inicializa a state machine
-        pio_sm_init(pio, sm, offset, &c);
-        pio_sm_set_enabled(pio, sm, true);
-    }    
     void set_matrix(char digito) {
+        const uint32_t numeros[10] = {
+                0b011101000110011011100,  // 0
+                0b001001011000001011100,  // 1
+                0b011101000011100011110,  // 2
+                0b011101000011100100011,  // 3
+                0b000110011111000010000,  // 4
+                0b011111000011110100011,  // 5
+                0b011111000111110100011,  // 6
+                0b011100000110001000010,  // 7
+                0b011111000111110111111,  // 8
+                0b011111000111110100011   // 9
+            };
+        if (digito == 'c') {
+                clearMatrix();
+                renderMatrix();
+                printf("Matriz de LEDs apagada\n");
+                return;
+            }
         int index = digito - '0';
-        // Enviar os dados para a WS2812
-        for (int i = 0; i < NUM_LED; i++) {
-                uint32_t color = (patterns[index] & (1 << i)) ? 0x00FF00 : 0x000000; // Verde ou apagado
-                pio_sm_put_blocking(pio, sm, color << 8);
-        }
-    
+        if (index < 0 || index > 9) return;
+        clearMatrix();
+        setLedMatrix(index, 0, 255, 0);
+        renderMatrix();        
         // Depuração: Exibir no Serial Monitor para ver se o índice está correto
         printf("Número recebido: %c, Índice convertido: %d\n", digito, index);
     }
